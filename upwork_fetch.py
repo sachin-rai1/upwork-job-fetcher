@@ -125,16 +125,19 @@ def validate_env() -> Tuple[bool, str]:
 
 def fetch_upwork() -> requests.Response:
     headers = {
-    "authorization": f"Bearer {TOKEN}",
+    "Authorization": f"Bearer {TOKEN}",
     "x-upwork-api-tenantid": TENANT_ID,
-    "referer": "https://www.upwork.com/nx/find-work/most-recent",
-    "content-type": "application/json",
-    "accept": "*/*",
-    "origin": "https://www.upwork.com",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "Referer": "https://www.upwork.com/nx/find-work/most-recent",
+    "Content-Type": "application/json",
+    "Accept": "*/*",
+    "Origin": "https://www.upwork.com",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
                   "Chrome/141.0.0.0 Safari/537.36",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-US,en;q=0.9",
 }
+
 
     for attempt in range(1, MAX_RETRIES+1):
         try:
