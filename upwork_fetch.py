@@ -125,25 +125,25 @@ def validate_env() -> Tuple[bool, str]:
 
 def fetch_upwork() -> requests.Response:
     headers = {
-    "Authorization": f"Bearer {TOKEN}",
-    "x-upwork-api-tenantid": TENANT_ID,
-    "Referer": "https://www.upwork.com/nx/find-work/most-recent",
-    "Content-Type": "application/json",
-    "Accept": "*/*",
-    "Origin": "https://www.upwork.com",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/141.0.0.0 Safari/537.36",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-
+        "Authorization": f"Bearer {TOKEN}",
+        "Content-Type": "application/json",
+        "x-upwork-api-tenantid": TENANT_ID,
+        "Referer": "https://www.upwork.com/nx/find-work/most-recent",
+        "Accept": "*/*",
+        "User-Agent": "UpworkFetcher/1.0"
+    }
     for attempt in range(1, MAX_RETRIES+1):
         try:
+            logging.info("Making request to %s (attempt %d/%d)", API_URL, attempt, MAX_RETRIES)
             resp = requests.post(API_URL, headers=headers, json=GRAPHQL_PAYLOAD, timeout=20)
+            logging.info("Response received - Status: %s, Content-Type: %s, Length: %d", 
+                        resp.status_code, 
+                        resp.headers.get('content-type', 'unknown'), 
+                        len(resp.content))
+            
             if resp.status_code >= 500:
                 logging.warning("Server error %s. Attempt %d/%d", resp.status_code, attempt, MAX_RETRIES)
+                logging.warning("Response content: %s", resp.text[:500])
                 time.sleep(RETRY_BACKOFF ** attempt)
                 continue
             return resp
@@ -203,35 +203,73 @@ def main():
         sys.exit(1)
 
     logging.info("Received status %s", resp.status_code)
+    logging.info("Response headers: %s", dict(resp.headers))
+    logging.info("Response content type: %s", resp.headers.get('content-type', 'unknown'))
+    logging.info("Response length: %d bytes", len(resp.content))
+    
     if resp.status_code == 200:
-    try:
-        data = resp.json()
-    except ValueError:
-        logging.error("Response not JSON. Text snippet: %s", resp.text[:500])
-        err_msg = EmailMessage()
-        err_msg["From"] = SENDER
-        err_msg["To"] = RECIPIENT
-        err_msg["Subject"] = f"[Upwork Fetcher] Non-JSON response {resp.status_code}"
-        err_msg.set_content(f"Raw text (first 1000 chars):\n\n{resp.text[:1000]}")
+        # Check if response is empty
+        if not resp.content:
+            logging.error("Received empty response from API")
+            err_msg = EmailMessage()
+            err_msg["From"] = SENDER
+            err_msg["To"] = RECIPIENT
+            err_msg["Subject"] = f"[Upwork Fetcher] Empty Response"
+            err_msg.set_content("The Upwork API returned an empty response.")
+            try:
+                send_email(err_msg)
+            except Exception as se:
+                logging.exception("Failed sending empty response error mail: %s", se)
+            sys.exit(7)
+        
+        # Check if response is actually JSON
+        content_type = resp.headers.get('content-type', '').lower()
+        if 'application/json' not in content_type:
+            logging.error("Expected JSON response but got content-type: %s", content_type)
+            logging.error("Response content (first 500 chars): %s", resp.text[:500])
+            # Send error email about unexpected content type
+            err_msg = EmailMessage()
+            err_msg["From"] = SENDER
+            err_msg["To"] = RECIPIENT
+            err_msg["Subject"] = f"[Upwork Fetcher] Unexpected Content Type"
+            err_msg.set_content(f"Expected JSON but got content-type: {content_type}\n\nResponse content:\n{resp.text[:1000]}")
+            try:
+                send_email(err_msg)
+            except Exception as se:
+                logging.exception("Failed sending content type error mail: %s", se)
+            sys.exit(5)
+        
+        # Try to parse JSON with better error handling
         try:
-            send_email(err_msg)
-        except Exception as se:
-            logging.exception("Failed sending non-JSON error mail: %s", se)
-        sys.exit(5)
+            data = resp.json()
+        except json.JSONDecodeError as e:
+            logging.error("Failed to parse JSON response: %s", e)
+            logging.error("Response content (first 1000 chars): %s", resp.text[:1000])
+            # Send error email about JSON parsing failure
+            err_msg = EmailMessage()
+            err_msg["From"] = SENDER
+            err_msg["To"] = RECIPIENT
+            err_msg["Subject"] = f"[Upwork Fetcher] JSON Parse Error"
+            err_msg.set_content(f"Failed to parse JSON response: {e}\n\nResponse content:\n{resp.text[:1000]}")
+            try:
+                send_email(err_msg)
+            except Exception as se:
+                logging.exception("Failed sending JSON parse error mail: %s", se)
+            sys.exit(6)
+        
+        pretty = json.dumps(data, indent=2)
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        fname = f"upwork_feed_{ts}.json"
+        subject = f"[Upwork] mostRecentJobsFeed — {len(data.get('data', {}).get('mostRecentJobsFeed', {}).get('results', []))} results — {ts}"
 
-    pretty = json.dumps(data, indent=2)
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    fname = f"upwork_feed_{ts}.json"
-    subject = f"[Upwork] mostRecentJobsFeed — {len(data.get('data', {}).get('mostRecentJobsFeed', {}).get('results', []))} results — {ts}"
-
-    body = f"Upwork API call succeeded.\n\nTime (UTC): {ts}\nHTTP Status: {resp.status_code}\n\nAttached: {fname}\n\n(First 1000 chars of payload below)\n\n{pretty[:1000]}"
-    email = make_email(subject, body, pretty.encode('utf-8'), fname)
-    try:
-        send_email(email)
-    except Exception as e:
-        logging.exception("Failed to send success email: %s", e)
-        sys.exit(1)
-    logging.info("Done.")
+        body = f"Upwork API call succeeded.\n\nTime (UTC): {ts}\nHTTP Status: {resp.status_code}\n\nAttached: {fname}\n\n(First 1000 chars of payload below)\n\n{pretty[:1000]}"
+        email = make_email(subject, body, pretty.encode("utf-8"), fname)
+        try:
+            send_email(email)
+        except Exception as e:
+            logging.exception("Failed to send success email: %s", e)
+            sys.exit(1)
+        logging.info("Done.")
     elif resp.status_code in (401, 403):
         logging.error("Authorization error: %s", resp.status_code)
         # notify via mail
