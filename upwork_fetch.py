@@ -197,20 +197,34 @@ def main():
 
     logging.info("Received status %s", resp.status_code)
     if resp.status_code == 200:
+    try:
         data = resp.json()
-        pretty = json.dumps(data, indent=2)
-        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-        fname = f"upwork_feed_{ts}.json"
-        subject = f"[Upwork] mostRecentJobsFeed — {len(data.get('data', {}).get('mostRecentJobsFeed', {}).get('results', []))} results — {ts}"
-
-        body = f"Upwork API call succeeded.\n\nTime (UTC): {ts}\nHTTP Status: {resp.status_code}\n\nAttached: {fname}\n\n(First 1000 chars of payload below)\n\n{pretty[:1000]}"
-        email = make_email(subject, body, pretty.encode("utf-8"), fname)
+    except ValueError:
+        logging.error("Response not JSON. Text snippet: %s", resp.text[:500])
+        err_msg = EmailMessage()
+        err_msg["From"] = SENDER
+        err_msg["To"] = RECIPIENT
+        err_msg["Subject"] = f"[Upwork Fetcher] Non-JSON response {resp.status_code}"
+        err_msg.set_content(f"Raw text (first 1000 chars):\n\n{resp.text[:1000]}")
         try:
-            send_email(email)
-        except Exception as e:
-            logging.exception("Failed to send success email: %s", e)
-            sys.exit(1)
-        logging.info("Done.")
+            send_email(err_msg)
+        except Exception as se:
+            logging.exception("Failed sending non-JSON error mail: %s", se)
+        sys.exit(5)
+
+    pretty = json.dumps(data, indent=2)
+    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    fname = f"upwork_feed_{ts}.json"
+    subject = f"[Upwork] mostRecentJobsFeed — {len(data.get('data', {}).get('mostRecentJobsFeed', {}).get('results', []))} results — {ts}"
+
+    body = f"Upwork API call succeeded.\n\nTime (UTC): {ts}\nHTTP Status: {resp.status_code}\n\nAttached: {fname}\n\n(First 1000 chars of payload below)\n\n{pretty[:1000]}"
+    email = make_email(subject, body, pretty.encode('utf-8'), fname)
+    try:
+        send_email(email)
+    except Exception as e:
+        logging.exception("Failed to send success email: %s", e)
+        sys.exit(1)
+    logging.info("Done.")
     elif resp.status_code in (401, 403):
         logging.error("Authorization error: %s", resp.status_code)
         # notify via mail
